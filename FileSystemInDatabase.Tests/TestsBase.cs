@@ -10,8 +10,13 @@ namespace FileSystemInDatabase.Tests;
 [TestFixture]
 public abstract class TestsBase
 {
-    protected const string DatabaseConnectionString =
-        @"Server=localhost,1401;Database=FileSystem;User Id=sa;Password=!qaz2wsx;";
+    protected static readonly int DatabasePort = 1401;
+
+    protected static readonly string DatabaseConnectionString =
+        $@"Server=localhost,{DatabasePort};Database=FileSystem;User Id=sa;Password=!qaz2wsx;";
+
+    protected static readonly string DatabaseConnectionStringWithoutDatabaseParameter =
+        $@"Server=localhost,{DatabasePort};User Id=sa;Password=!qaz2wsx;";
 
     #region TestDataGuid
 
@@ -152,7 +157,7 @@ public abstract class TestsBase
     {
         var filePath = Path.Combine(TestContext.CurrentContext.TestDirectory, fileName);
         var sql = await File.ReadAllTextAsync(filePath);
-        await using var connection = new SqlConnection(@"Server=localhost,1401;User Id=sa;Password=!qaz2wsx;");
+        await using var connection = new SqlConnection(DatabaseConnectionStringWithoutDatabaseParameter);
         await connection.OpenAsync();
         await connection.ExecuteAsync(sql);
     }
