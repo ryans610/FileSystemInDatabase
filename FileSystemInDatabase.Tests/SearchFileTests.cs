@@ -30,7 +30,7 @@ public class SearchFileTests : TestsBase
         {
             s_file_record20220315,
         };
-        TestSearchFiles(s_folder_Ryan, exceptedFiles);
+        TestSearchFiles(s_folder_UsersRyan, exceptedFiles);
     }
 
     private void TestSearchFiles(Guid folder, IEnumerable<Guid> exceptedFiles)

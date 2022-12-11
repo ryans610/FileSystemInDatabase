@@ -19,14 +19,14 @@ public class MoveNodeTests : TestsBase
     public async Task TestMoveFile()
     {
         // arrange
-        var exceptedParentId = s_folder_RyanPictures;
+        var exceptedParentId = s_folder_UsersRyanPictures;
 
         // act
         Guid parentIdAfterMove;
         Guid parentIdFromDbAfterMove;
         try
         {
-            await _fileSystem.MoveNodeToFolderAsync(s_file_some_note2, s_folder_RyanPictures);
+            await _fileSystem.MoveNodeToFolderAsync(s_file_some_note2, s_folder_UsersRyanPictures);
             parentIdAfterMove = _fileSystem.GetNodeById(s_file_some_note2).ParentId;
             parentIdFromDbAfterMove = await GetParentIdFromDatabaseAsync(s_file_some_note2);
         }
@@ -44,7 +44,7 @@ public class MoveNodeTests : TestsBase
     public async Task TestMoveFolder()
     {
         // arrange
-        var exceptedParentId = s_folder_PublicDocuments;
+        var exceptedParentId = s_folder_UsersPublicDocuments;
         // path of this file begin with C:\Users\Ryan\Documents\record20220315.docx
         var exceptedFileRecord20220315FullPath = @"C:\Users\Public\Documents\Ryan\Documents\record20220315.docx";
 
@@ -54,9 +54,9 @@ public class MoveNodeTests : TestsBase
         string fileRecord20220315FullPath;
         try
         {
-            await _fileSystem.MoveNodeToFolderAsync(s_folder_Ryan, s_folder_PublicDocuments);
-            parentIdAfterMove = _fileSystem.GetNodeById(s_folder_Ryan).ParentId;
-            parentIdFromDbAfterMove = await GetParentIdFromDatabaseAsync(s_folder_Ryan);
+            await _fileSystem.MoveNodeToFolderAsync(s_folder_UsersRyan, s_folder_UsersPublicDocuments);
+            parentIdAfterMove = _fileSystem.GetNodeById(s_folder_UsersRyan).ParentId;
+            parentIdFromDbAfterMove = await GetParentIdFromDatabaseAsync(s_folder_UsersRyan);
             fileRecord20220315FullPath = _fileSystem.GetFullPathOfNode(s_file_record20220315);
         }
         catch (Exception)

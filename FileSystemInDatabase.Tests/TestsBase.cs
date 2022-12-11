@@ -18,19 +18,44 @@ public abstract class TestsBase
     protected static readonly Guid s_folder_C = Guid.Parse("2aa61413-0c8c-447a-99e6-b6981df0b315");
 
     /// <summary>
+    /// C:\Users
+    /// </summary>
+    protected static readonly Guid s_folder_Users = Guid.Parse("4bedd362-185f-45e0-9b10-33f4a99c6c19");
+
+    /// <summary>
+    /// C:\Users\Public
+    /// </summary>
+    protected static readonly Guid s_folder_UsersPublic = Guid.Parse("6a389c8e-ba2f-423c-9189-9315454fd4b7");
+
+    /// <summary>
     /// C:\Users\Public\Documents
     /// </summary>
-    protected static readonly Guid s_folder_PublicDocuments = Guid.Parse("bbf12448-65f5-4115-b99f-d17a4fef2943");
+    protected static readonly Guid s_folder_UsersPublicDocuments = Guid.Parse("bbf12448-65f5-4115-b99f-d17a4fef2943");
+
+    /// <summary>
+    /// C:\Users\Public\Pictures
+    /// </summary>
+    protected static readonly Guid s_folder_UsersPublicPictures = Guid.Parse("0a7d802a-53f7-4286-915a-7731d2fec53c");
 
     /// <summary>
     /// C:\Users\Ryan
     /// </summary>
-    protected static readonly Guid s_folder_Ryan = Guid.Parse("d49772c6-af9d-4bd8-beb4-17fbec56e4b3");
+    protected static readonly Guid s_folder_UsersRyan = Guid.Parse("d49772c6-af9d-4bd8-beb4-17fbec56e4b3");
 
     /// <summary>
     /// C:\Users\Ryan\Pictures
     /// </summary>
-    protected static readonly Guid s_folder_RyanPictures = Guid.Parse("025efaae-1127-496c-8f05-e83d390bd6e2");
+    protected static readonly Guid s_folder_UsersRyanPictures = Guid.Parse("025efaae-1127-496c-8f05-e83d390bd6e2");
+
+    /// <summary>
+    /// C:\Users\Public\Pictures\a photo.jpg
+    /// </summary>
+    protected static readonly Guid s_file_a_photo = Guid.Parse("c75a4bd4-dc46-4a51-b5e8-267985d0a6f8");
+
+    /// <summary>
+    /// C:\Users\Public\Documents\some_note.txt
+    /// </summary>
+    protected static readonly Guid s_file_some_note = Guid.Parse("0188e2d7-ea03-4fbe-90f7-b989dad6b173");
 
     /// <summary>
     /// C:\Users\Public\Documents\some_note2.txt
@@ -46,12 +71,22 @@ public abstract class TestsBase
     /// C:\Users\Ryan\Documents\record20220315.docx
     /// </summary>
     protected static readonly Guid s_file_record20220315 = Guid.Parse("e64ee1a2-8370-4852-8ccd-f5d07c6043ea");
+
+    /// <summary>
+    /// C:\Users\Ryan\.bash_history
+    /// </summary>
+    protected static readonly Guid s_file_bash_history = Guid.Parse("46aaffa2-9488-466d-969a-2a0721725dc5");
+
+    /// <summary>
+    /// C:\Users\Ryan\.bash_profile
+    /// </summary>
+    protected static readonly Guid s_file_bash_profile = Guid.Parse("cb720f82-55ef-480f-a779-408bec69e91c");
     // ReSharper restore InconsistentNaming
 
     protected IHost Host { get; private set; }
 
     [OneTimeSetUp]
-    public async Task Foo()
+    public async Task BaseOneTimeSetUpAsync()
     {
         try
         {
@@ -77,6 +112,7 @@ public abstract class TestsBase
                 services.AddFileSystemInDatabase(options =>
                 {
                     options.DatabaseConnectionString = DatabaseConnectionString;
+                    options.HouseKeepingInterval = TimeSpan.Zero;   // ignore house keeping when unit test
                 });
             });
             Host = await builder.StartAsync();

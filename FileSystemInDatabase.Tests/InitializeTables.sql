@@ -1,3 +1,12 @@
+IF (NOT EXISTS (SELECT *
+                FROM sys.change_tracking_databases
+                WHERE database_id = DB_ID('FileSystem')))
+BEGIN
+    ALTER DATABASE [FileSystem]
+    SET CHANGE_TRACKING = ON
+    (CHANGE_RETENTION = 1 HOURS, AUTO_CLEANUP = ON)
+END
+
 USE [FileSystem];
 
 IF (NOT EXISTS (SELECT *
@@ -12,6 +21,15 @@ BEGIN
         [Type] tinyint NOT NULL,
         [IsRoot] bit NOT NULL DEFAULT 0,
     );
+END
+
+IF (NOT EXISTS (SELECT *
+                FROM sys.change_tracking_tables
+                WHERE object_id = OBJECT_ID('dbo.Node')))
+BEGIN
+    ALTER TABLE [Node]
+    ENABLE CHANGE_TRACKING
+    WITH (TRACK_COLUMNS_UPDATED = ON)
 END
 
 IF (NOT EXISTS (SELECT *
