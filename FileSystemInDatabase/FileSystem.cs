@@ -1,6 +1,9 @@
+using System.IO;
 using System.Threading;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+
+// ReSharper disable All
 
 namespace FileSystemInDatabase;
 
@@ -17,10 +20,16 @@ internal class FileSystem : IFileSystem, IHostedService
 
     private readonly IOptions<FileSystemOptions> _options;
     private readonly FileSystemRepository _repo;
-    private readonly ConcurrentDictionary<Guid, LazyTreeNode<Node>> _nodes = new();
 
     private readonly CancellationTokenSource _startUpCompleteSource;
     private readonly CancellationToken _startUpCompleteToken;
+    private readonly CancellationTokenSource _shutDownCancellationSource = new();
+    private Task _houseKeepingTask;
+    private Task _trackingDatabaseChangeTask;
+    private TimeSpan _changeTrackingInterval;
+    private long _trackingDatabaseChangeVersion = 0L;
+
+    private readonly ConcurrentDictionary<Guid, LazyTreeNode<Node>> _nodes = new();
 
     [PublicAPI]
     public Node GetNodeById(Guid id)
@@ -93,11 +102,17 @@ internal class FileSystem : IFileSystem, IHostedService
     }
 
     [PublicAPI]
-    public async Task AddSubFolderToFolderAsync(string subFolderName, Guid folderId)
+    public async Task<Guid> AddSubFolderToFolderAsync(string subFolderName, Guid folderId)
     {
         await CheckAndWaitingWaitingForStartUpCompleteAsync();
 
         var folder = GetFolderNodeOrThrow(folderId);
+
+        if (folder.Children.Select(x => x.Data.Name).Contains(subFolderName))
+        {
+            throw new InvalidOperationException(
+                $"Folder {folder.Data.Name} already contains node named {subFolderName}.");
+        }
 
         var node = new FolderNode
         {
@@ -106,14 +121,41 @@ internal class FileSystem : IFileSystem, IHostedService
             ParentId = folderId,
             Name = subFolderName,
         };
-        var treeNode = new LazyTreeNode<Node>(
-            node,
-            LazyTreeParentProvider,
-            LazyTreeChildrenProvider);
-        _nodes.TryAdd(node.Id, treeNode);
-        TryClearNodeChildren(folderId);
 
-        //TODO: database
+        await _repo.InsertFolderNodeAsync(node);
+
+        await UpdateSingleNodeFromDatabaseAsync(node.Id);
+
+        return node.Id;
+    }
+
+    [PublicAPI]
+    public async Task<Guid> AddFileToFolderAsync(string fileName, byte[] content, Guid folderId)
+    {
+        await CheckAndWaitingWaitingForStartUpCompleteAsync();
+
+        var folder = GetFolderNodeOrThrow(folderId);
+        var fileNameWithoutExtension = Path.GetFileNameWithoutExtension(fileName);
+        if (folder.Children.Select(x => x.Data.Name).Contains(fileNameWithoutExtension))
+        {
+            throw new InvalidOperationException(
+                $"Folder {folder.Data.Name} already contains node named {fileNameWithoutExtension}.");
+        }
+
+        var node = new FileNode
+        {
+            Id = Guid.NewGuid(),
+            Name = fileNameWithoutExtension,
+            ParentId = folderId,
+            Extension = Path.GetExtension(fileName),
+            Content = content,
+        };
+
+        await _repo.InsertFileNodeAsync(node);
+
+        await UpdateSingleNodeFromDatabaseAsync(node.Id);
+
+        return node.Id;
     }
 
     [PublicAPI]
@@ -185,7 +227,8 @@ internal class FileSystem : IFileSystem, IHostedService
         var parentNodeIds = nodesToBeDelete
             .Select(x => x.Data.ParentId)
             .Prepend(folderId)
-            .Distinct();
+            .Distinct()
+            .Where(x => x != folderNode.Data.ParentId);
         await _repo.DeleteFolderNodeAsync(folderId, parentNodeIds);
     }
 
@@ -233,6 +276,43 @@ internal class FileSystem : IFileSystem, IHostedService
         }
 
         return node;
+    }
+
+    private async Task UpdateSingleNodeFromDatabaseAsync(Guid nodeId)
+    {
+        var node = await _repo.GetNodeByIdAsync(nodeId);
+        if (node is null)
+        {
+            if (_nodes.TryRemove(nodeId, out var deleteTreeNode))
+            {
+                TryClearNodeChildren(deleteTreeNode.Parent.Data.Id);
+            }
+        }
+        else
+        {
+            UpdateSingleNode(node);
+        }
+    }
+
+    private void UpdateSingleNode(Node node)
+    {
+        if (_nodes.TryGetValue(node.Id, out var treeNode))
+        {
+            var oldParentId = treeNode.Data.ParentId;
+            var childrenIds = treeNode.Children.Select(x => x.Data.Id).ToList();
+            treeNode.Data = node;
+            TryClearNodeChildren(oldParentId);
+            TryClearNodeChildren(node.Id);
+            childrenIds.ForEach(x => TryClearNodeParent(x));
+        }
+        else
+        {
+            _nodes.TryAdd(node.Id, new LazyTreeNode<Node>(
+                node,
+                LazyTreeParentProvider,
+                LazyTreeChildrenProvider));
+            TryClearNodeChildren(node.ParentId);
+        }
     }
 
     private void TryClearNodeParent(Guid nodeId)
@@ -313,9 +393,27 @@ internal class FileSystem : IFileSystem, IHostedService
                     LazyTreeChildrenProvider));
             }
 
+            _startUpCompleteSource.Cancel();
+
             if (_options.Value.HouseKeepingInterval != TimeSpan.Zero)
             {
+                _houseKeepingTask = Task.Factory.StartNew(
+                    HouseKeepingAsync,
+                    TaskCreationOptions.LongRunning);
             }
+
+
+            var _changeTrackingInterval = _options.Value.TrackingChangeInterval;
+            if (_changeTrackingInterval == TimeSpan.Zero)
+            {
+                _changeTrackingInterval = TimeSpan.FromSeconds(10);
+            }
+
+            var version = await _repo.GetInitialChangeTableVersion();
+            Interlocked.Exchange(ref _trackingDatabaseChangeVersion, version);
+            _trackingDatabaseChangeTask = Task.Factory.StartNew(
+                TrackingDatabaseChangeAsync,
+                TaskCreationOptions.LongRunning);
         }
         catch (Exception)
         {
@@ -330,8 +428,82 @@ internal class FileSystem : IFileSystem, IHostedService
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
+        _shutDownCancellationSource.Cancel();
+        _houseKeepingTask = null;
+        _trackingDatabaseChangeTask = null;
         return Task.CompletedTask;
     }
 
     #endregion HostedService
+
+    #region BackgroundTask
+
+    private async Task HouseKeepingAsync()
+    {
+        var cancellationToken = _shutDownCancellationSource.Token;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            await Task.Delay(_options.Value.HouseKeepingInterval, cancellationToken);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            try
+            {
+                await _repo.HouseKeepingOnceAsync();
+            }
+            catch (Exception)
+            {
+                // TODO: Error Handling
+                //ignore
+            }
+        }
+    }
+
+    private async Task TrackingDatabaseChangeAsync()
+    {
+        var cancellationToken = _shutDownCancellationSource.Token;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            await Task.Delay(_changeTrackingInterval, cancellationToken);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            try
+            {
+                long version = Interlocked.Read(ref _trackingDatabaseChangeVersion);
+                var changes = await _repo.FetchTableChanges(_trackingDatabaseChangeVersion);
+                foreach (var change in changes)
+                {
+                    version = Math.Max(version, change.SYS_CHANGE_VERSION);
+                    switch (change.SYS_CHANGE_OPERATION)
+                    {
+                        case 'I':
+                        case 'U':
+                            await UpdateSingleNodeFromDatabaseAsync(change.Id);
+                            break;
+                        case 'D':
+                            if (_nodes.TryRemove(change.Id, out var deleteTreeNode))
+                            {
+                                TryClearNodeChildren(deleteTreeNode.Parent.Data.Id);
+                            }
+
+                            break;
+                    }
+                }
+
+                Interlocked.Exchange(ref _trackingDatabaseChangeVersion, version);
+            }
+            catch (Exception)
+            {
+                // TODO: Error Handling
+                //ignore
+            }
+        }
+    }
+
+    #endregion BackgroundTask
 }

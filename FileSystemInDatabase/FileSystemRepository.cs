@@ -1,3 +1,4 @@
+using System.Data;
 using System.Data.Common;
 using System.Data.SqlClient;
 using Dapper;
@@ -8,6 +9,37 @@ namespace FileSystemInDatabase;
 internal class FileSystemRepository
 {
     private const int DeleteChunkSize = 500;
+
+    private const string SqlSelectNode = $@"
+SELECT
+    [{nameof(Node)}].[{nameof(Node.Type)}], -- Type need to be first for node type check
+    [{nameof(Node)}].[{nameof(Node.Id)}],
+    [{nameof(Node)}].[{nameof(Node.Name)}],
+    [{nameof(Node)}].[{nameof(Node.ParentId)}],
+    [{nameof(Node)}].[{nameof(Node.IsRoot)}],
+    [{nameof(FileNode)}].[{nameof(FileNode.Extension)}],
+    [{nameof(FileNode)}].[{nameof(FileNode.Content)}]
+FROM [{nameof(Node)}]
+LEFT JOIN [{nameof(FolderNode)}]
+    ON [{nameof(FolderNode)}].[{nameof(FolderNode.Id)}]=[{nameof(Node)}].[{nameof(Node.Id)}]
+LEFT JOIN [{nameof(FileNode)}]
+    ON [{nameof(FileNode)}].[{nameof(FileNode.Id)}]=[{nameof(Node)}].[{nameof(Node.Id)}]";
+
+    private const string SqlInsertNode = $@"
+INSERT INTO [{nameof(Node)}]
+(
+    [{nameof(Node.Id)}],
+    [{nameof(Node.Name)}],
+    [{nameof(Node.ParentId)}],
+    [{nameof(Node.Type)}]
+)
+VALUES
+(
+    @{nameof(Node.Id)},
+    @{nameof(Node.Name)},
+    @{nameof(Node.ParentId)},
+    @{nameof(Node.Type)}
+);";
 
     public FileSystemRepository(IOptions<FileSystemOptions> options)
     {
@@ -20,38 +52,70 @@ internal class FileSystemRepository
     {
         await using var connection = await OpenConnectionAsync();
         var nodes = new List<Node>();
-        await using var reader = await connection.ExecuteReaderAsync($@"
-SELECT
-    [{nameof(Node)}].[{nameof(Node.Type)}], -- Type need to be first for node type check
-    [{nameof(Node)}].[{nameof(Node.Id)}],
-    [{nameof(Node)}].[{nameof(Node.Name)}],
-    [{nameof(Node)}].[{nameof(Node.ParentId)}],
-    [{nameof(FileNode)}].[{nameof(FileNode.Extension)}],
-    [{nameof(FileNode)}].[{nameof(FileNode.Content)}]
-FROM [{nameof(Node)}]
-LEFT JOIN [{nameof(FolderNode)}]
-    ON [{nameof(FolderNode)}].[{nameof(FolderNode.Id)}]=[{nameof(Node)}].[{nameof(Node.Id)}]
-LEFT JOIN [{nameof(FileNode)}]
-    ON [{nameof(FileNode)}].[{nameof(FileNode.Id)}]=[{nameof(Node)}].[{nameof(Node.Id)}]");
-        var folderParser = reader.GetRowParser<Node>(typeof(FolderNode));
-        var fileParser = reader.GetRowParser<Node>(typeof(FileNode));
+        await using var reader = await connection.ExecuteReaderAsync(SqlSelectNode);
+        var (folderParser, fileParser) = GetNodeRowParsers(reader);
         while (await reader.ReadAsync())
         {
-            var node = (Node.Types)reader.GetByte(0) switch
-            {
-                Node.Types.Folder => folderParser.Invoke(reader),
-                Node.Types.File => fileParser.Invoke(reader),
-                _ => null,
-            };
+            var node = ParseNode(reader, folderParser, fileParser);
             if (node is null)
             {
                 continue;
             }
 
-            nodes.Add(node);
+            nodes.Add(item: node);
         }
 
         return nodes;
+    }
+
+    public async Task<Node> GetNodeByIdAsync(Guid id)
+    {
+        await using var connection = await OpenConnectionAsync();
+        await using var reader = await connection.ExecuteReaderAsync($@"
+{SqlSelectNode}
+WHERE [{nameof(Node)}].[{nameof(Node.Id)}]=@{nameof(id)}", new { id });
+        var (folderParser, fileParser) = GetNodeRowParsers(reader);
+        return await reader.ReadAsync() ? ParseNode(reader, folderParser, fileParser) : null;
+    }
+
+    public async Task InsertFolderNodeAsync(FolderNode folderNode)
+    {
+        await using var connection = await OpenConnectionAsync();
+        await connection.ExecuteAsync($@"
+BEGIN TRANSACTION;
+{SqlInsertNode}
+INSERT INTO [{nameof(FolderNode)}]
+(
+    [{nameof(FolderNode.Id)}]
+)
+VALUES
+(
+    @{nameof(FolderNode.Id)}
+);
+COMMIT;
+", folderNode);
+    }
+
+    public async Task InsertFileNodeAsync(FileNode fileNode)
+    {
+        await using var connection = await OpenConnectionAsync();
+        await connection.ExecuteAsync($@"
+BEGIN TRANSACTION;
+{SqlInsertNode}
+INSERT INTO [{nameof(FileNode)}]
+(
+    [{nameof(FileNode.Id)}],
+    [{nameof(FileNode.Extension)}],
+    [{nameof(FileNode.Content)}]
+)
+VALUES
+(
+    @{nameof(FileNode.Id)},
+    @{nameof(FileNode.Extension)},
+    @{nameof(FileNode.Content)}
+);
+COMMIT;
+", fileNode);
     }
 
     public async Task<Guid> ChangeNodeParentAsync(Guid nodeId, Guid parentId)
@@ -100,33 +164,96 @@ WHERE [{nameof(Node)}].[{nameof(Node.Id)}]=@{nameof(nodeId)};
         {
             await connection.ExecuteAsync($@"
 DELETE FROM [{nameof(Node)}]
-WHERE [{nameof(Node)}].[{nameof(Node.ParentId)}] in @{nameof(parentIds)}
-", new { ids = parentIds });
+WHERE [{nameof(Node)}].[{nameof(Node.ParentId)}] IN @{nameof(parentIds)}
+", new { parentIds });
         }
 
-        // Delete folders and files that has no mapping nodes.
-        await connection.ExecuteAsync($@"
-DELETE F
-FROM [{nameof(FolderNode)}] F
-LEFT JOIN [{nameof(Node)}] N
-    ON N.[{nameof(Node.Id)}]=F.[{nameof(FolderNode.Id)}]
-WHERE N.[{nameof(Node.Id)}] IS NULL;
-DELETE F
-FROM [{nameof(FileNode)}] F
-LEFT JOIN [{nameof(Node)}] N
-    ON N.[{nameof(Node.Id)}]=F.[{nameof(FileNode.Id)}]
-WHERE N.[{nameof(Node.Id)}] IS NULL;");
+        await ClearNodelessFileAndFolder(connection);
     }
 
     public async Task DeleteFileNodeAsync(Guid nodeId)
     {
         await using var connection = await OpenConnectionAsync();
         await connection.ExecuteAsync($@"
+BEGIN TRANSACTION;
 DELETE FROM [{nameof(Node)}]
 WHERE [{nameof(Node)}].[{nameof(Node.Id)}]=@{nameof(nodeId)};
 DELETE FROM [{nameof(FileNode)}]
 WHERE [{nameof(FileNode)}].[{nameof(FileNode.Id)}]=@{nameof(nodeId)};
+COMMIT;
 ", new { nodeId });
+    }
+
+    public async Task HouseKeepingOnceAsync()
+    {
+        await using var connection = await OpenConnectionAsync();
+        await connection.ExecuteAsync($@"
+DELETE FROM [{nameof(Node)}]
+WHERE [{nameof(Node)}].[{nameof(Node.ParentId)}] NOT IN (
+    SELECT [{nameof(Node.Id)}] FROM [{nameof(Node)}])");
+        await ClearNodelessFileAndFolder(connection);
+    }
+
+    public async Task<long> GetInitialChangeTableVersion()
+    {
+        await using var connection = await OpenConnectionAsync();
+        return await connection.ExecuteScalarAsync<long>($@"
+SELECT MAX([{nameof(ChangeTableModel<Guid>.SYS_CHANGE_VERSION)}])
+FROM CHANGETABLE(CHANGES [{nameof(Node)}], 0) chg");
+    }
+
+    public async Task<IEnumerable<ChangeTableModel<Guid>>> FetchTableChanges(long version)
+    {
+        await using var connection = await OpenConnectionAsync();
+        return await connection.QueryAsync<ChangeTableModel<Guid>>($@"
+SELECT *
+FROM CHANGETABLE(CHANGES [{nameof(Node)}], @version) chg", new { version });
+    }
+
+    private (Func<IDataReader, Node> folderParser, Func<IDataReader, Node> fileParser) GetNodeRowParsers(
+        DbDataReader reader)
+    {
+        var folderParser = reader.GetRowParser<Node>(typeof(FolderNode));
+        var fileParser = reader.GetRowParser<Node>(typeof(FileNode));
+        return (folderParser, fileParser);
+    }
+
+    private Node ParseNode(DbDataReader reader, Func<IDataReader, Node> folderParser,
+        Func<IDataReader, Node> fileParser)
+    {
+        var node = (Node.Types)reader.GetByte(0) switch
+        {
+            Node.Types.Folder => folderParser.Invoke(reader),
+            Node.Types.File => fileParser.Invoke(reader),
+            _ => null,
+        };
+        return node;
+    }
+
+    // ReSharper disable once IdentifierTypo
+    private async Task ClearNodelessFileAndFolder(DbConnection connection = null)
+    {
+        var needClose = false;
+        if (connection is null)
+        {
+            needClose = true;
+            connection = await OpenConnectionAsync();
+        }
+
+        await connection.ExecuteAsync($@"
+BEGIN TRANSACTION;
+DELETE FROM [{nameof(FileNode)}]
+WHERE [{nameof(FileNode)}].[{nameof(FileNode.Id)}] NOT IN (
+    SELECT [{nameof(Node.Id)}] FROM [{nameof(Node)}]);
+DELETE FROM [{nameof(FolderNode)}]
+WHERE [{nameof(FolderNode)}].[{nameof(FolderNode.Id)}] NOT IN (
+    SELECT [{nameof(Node.Id)}] FROM [{nameof(Node)}]);
+COMMIT;");
+
+        if (needClose)
+        {
+            await connection.DisposeAsync();
+        }
     }
 
     private async Task<DbConnection> OpenConnectionAsync()
