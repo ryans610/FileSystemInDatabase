@@ -22,13 +22,22 @@ internal class FileSystemRepository
         var nodes = new List<Node>();
         await using var reader = await connection.ExecuteReaderAsync($@"
 SELECT
-    [{nameof(Node.Type)}]
-FROM []");
+    [{nameof(Node)}].[{nameof(Node.Type)}], -- Type need to be first for node type check
+    [{nameof(Node)}].[{nameof(Node.Id)}],
+    [{nameof(Node)}].[{nameof(Node.Name)}],
+    [{nameof(Node)}].[{nameof(Node.ParentId)}],
+    [{nameof(FileNode)}].[{nameof(FileNode.Extension)}],
+    [{nameof(FileNode)}].[{nameof(FileNode.Content)}]
+FROM [{nameof(Node)}]
+LEFT JOIN [{nameof(FolderNode)}]
+    ON [{nameof(FolderNode)}].[{nameof(FolderNode.Id)}]=[{nameof(Node)}].[{nameof(Node.Id)}]
+LEFT JOIN [{nameof(FileNode)}]
+    ON [{nameof(FileNode)}].[{nameof(FileNode.Id)}]=[{nameof(Node)}].[{nameof(Node.Id)}]");
         var folderParser = reader.GetRowParser<Node>(typeof(FolderNode));
         var fileParser = reader.GetRowParser<Node>(typeof(FileNode));
         while (await reader.ReadAsync())
         {
-            var node = (Node.Types)reader.GetInt32(0) switch
+            var node = (Node.Types)reader.GetByte(0) switch
             {
                 Node.Types.Folder => folderParser.Invoke(reader),
                 Node.Types.File => fileParser.Invoke(reader),
@@ -43,6 +52,33 @@ FROM []");
         }
 
         return nodes;
+    }
+
+    public async Task<Guid> ChangeNodeParentAsync(Guid nodeId, Guid parentId)
+    {
+        await using var connection = await OpenConnectionAsync();
+        return await connection.ExecuteScalarAsync<Guid>($@"
+BEGIN TRANSACTION;
+
+DECLARE @NodeName nvarchar(255);
+SELECT @NodeName=[{nameof(Node)}].[{nameof(Node.Name)}]
+FROM [{nameof(Node)}]
+WHERE [{nameof(Node)}].[{nameof(Node.Id)}]=@{nameof(nodeId)};
+
+UPDATE [{nameof(Node)}] SET
+[{nameof(Node.ParentId)}]=@{nameof(parentId)}
+WHERE [{nameof(Node.Id)}]=@{nameof(nodeId)}
+  AND NOT EXISTS (SELECT *
+                  FROM [{nameof(Node)}]
+                  WHERE [{nameof(Node)}].[{nameof(Node.ParentId)}]=@{nameof(parentId)}
+                    AND [{nameof(Node)}].[{nameof(Node.Name)}]=@NodeName);
+
+COMMIT;
+
+SELECT [{nameof(Node)}].[{nameof(Node.ParentId)}]
+FROM [{nameof(Node)}]
+WHERE [{nameof(Node)}].[{nameof(Node.Id)}]=@{nameof(nodeId)};
+", new { nodeId, parentId });
     }
 
     public async Task DeleteFolderNodeAsync(

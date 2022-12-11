@@ -2,7 +2,7 @@ namespace FileSystemInDatabase;
 
 public interface IFileSystem
 {
-    Task AddNodeToFolderAsync(Node node, Guid folderId);
+    Task AddSubFolderToFolderAsync(string subFolderName, Guid folderId);
     Task DeleteFileAsync(Guid fileId);
     Task DeleteFolderAsync(Guid folderId);
     IEnumerable<FileNode> GetFilesUnderFolder(Guid folderId);

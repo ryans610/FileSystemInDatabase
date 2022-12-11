@@ -1,22 +1,23 @@
 using System.Threading;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace FileSystemInDatabase;
 
 internal class FileSystem : IFileSystem, IHostedService
 {
-    public FileSystem(FileSystemRepository repo)
+    public FileSystem(IOptions<FileSystemOptions> options, FileSystemRepository repo)
     {
+        _options = options;
         _repo = repo;
         var startUpCompleteSource = new CancellationTokenSource();
         _startUpCompleteSource = startUpCompleteSource;
         _startUpCompleteToken = startUpCompleteSource.Token;
     }
 
+    private readonly IOptions<FileSystemOptions> _options;
     private readonly FileSystemRepository _repo;
     private readonly ConcurrentDictionary<Guid, LazyTreeNode<Node>> _nodes = new();
-
-    private LazyTreeNode<Node> _root;
 
     private readonly CancellationTokenSource _startUpCompleteSource;
     private readonly CancellationToken _startUpCompleteToken;
@@ -24,10 +25,7 @@ internal class FileSystem : IFileSystem, IHostedService
     [PublicAPI]
     public Node GetNodeById(Guid id)
     {
-        if (!IsStartUpComplete())
-        {
-            WaitingForStartUpCompleteAsync().GetAwaiter().GetResult();
-        }
+        CheckAndWaitingForStartUpComplete();
 
         return CollectionExtensions.GetValueOrDefault(_nodes, id)?.Data;
     }
@@ -35,10 +33,7 @@ internal class FileSystem : IFileSystem, IHostedService
     [PublicAPI]
     public IEnumerable<Node> GetNodesUnderFolder(Guid folderId)
     {
-        if (!IsStartUpComplete())
-        {
-            WaitingForStartUpCompleteAsync().GetAwaiter().GetResult();
-        }
+        CheckAndWaitingForStartUpComplete();
 
         return GetFolderNodeOrThrow(folderId).Children.Select(x => x.Data);
     }
@@ -46,10 +41,7 @@ internal class FileSystem : IFileSystem, IHostedService
     [PublicAPI]
     public string GetFullPathOfNode(Guid nodeId)
     {
-        if (!IsStartUpComplete())
-        {
-            WaitingForStartUpCompleteAsync().GetAwaiter().GetResult();
-        }
+        CheckAndWaitingForStartUpComplete();
 
         if (!_nodes.TryGetValue(nodeId, out var treeNode))
         {
@@ -68,10 +60,7 @@ internal class FileSystem : IFileSystem, IHostedService
     [PublicAPI]
     public IEnumerable<FolderNode> GetSubFoldersUnderFolder(Guid folderId)
     {
-        if (!IsStartUpComplete())
-        {
-            WaitingForStartUpCompleteAsync().GetAwaiter().GetResult();
-        }
+        CheckAndWaitingForStartUpComplete();
 
         return GetFolderNodeOrThrow(folderId)
             .Children
@@ -82,10 +71,7 @@ internal class FileSystem : IFileSystem, IHostedService
     [PublicAPI]
     public IEnumerable<FileNode> GetFilesUnderFolder(Guid folderId)
     {
-        if (!IsStartUpComplete())
-        {
-            WaitingForStartUpCompleteAsync().GetAwaiter().GetResult();
-        }
+        CheckAndWaitingForStartUpComplete();
 
         return GetFolderNodeOrThrow(folderId)
             .Children
@@ -98,36 +84,32 @@ internal class FileSystem : IFileSystem, IHostedService
         Guid folderId,
         Func<FileNode, bool> predicate)
     {
-        if (!IsStartUpComplete())
-        {
-            WaitingForStartUpCompleteAsync().GetAwaiter().GetResult();
-        }
+        CheckAndWaitingForStartUpComplete();
 
-        if (!_nodes.TryGetValue(folderId, out var folder))
-        {
-            return Enumerable.Empty<FileNode>();
-        }
-
-        return folder
+        return GetFolderNodeOrThrow(folderId)
             .Select(x => x.Data)
             .OfType<FileNode>()
             .Where(predicate);
     }
 
     [PublicAPI]
-    public async Task AddNodeToFolderAsync(Node node, Guid folderId)
+    public async Task AddSubFolderToFolderAsync(string subFolderName, Guid folderId)
     {
-        if (!IsStartUpComplete())
-        {
-            await WaitingForStartUpCompleteAsync();
-        }
+        await CheckAndWaitingWaitingForStartUpCompleteAsync();
 
-        node = node with { Id = Guid.NewGuid() };
         var folder = GetFolderNodeOrThrow(folderId);
+
+        var node = new FolderNode
+        {
+            Id = Guid.NewGuid(),
+            IsRoot = false,
+            ParentId = folderId,
+            Name = subFolderName,
+        };
         var treeNode = new LazyTreeNode<Node>(
             node,
-            LazyTreeChildrenProvider,
-            parent: folder);
+            LazyTreeParentProvider,
+            LazyTreeChildrenProvider);
         _nodes.TryAdd(node.Id, treeNode);
         TryClearNodeChildren(folderId);
 
@@ -137,51 +119,63 @@ internal class FileSystem : IFileSystem, IHostedService
     [PublicAPI]
     public async Task MoveNodeToFolderAsync(Guid nodeId, Guid folderId)
     {
-        if (!IsStartUpComplete())
-        {
-            await WaitingForStartUpCompleteAsync();
-        }
+        await CheckAndWaitingWaitingForStartUpCompleteAsync();
 
-        var folder = GetFolderNodeOrThrow(folderId);
+        var targetFolder = GetFolderNodeOrThrow(folderId);
         if (!_nodes.TryGetValue(nodeId, out var node))
         {
             throw new InvalidOperationException(
                 $"Node {nodeId} does not exists.");
         }
 
-        var oldParent = node.Parent;
-        var newNode = node.Data with
+        if (node.Data.ParentId == folderId)
         {
-            ParentId = folderId,
-        };
-        if (_nodes.TryGetValue(nodeId, out var n))
-        {
-            n.Data = newNode;
+            throw new InvalidOperationException(
+                $"Node {node.Data.FullName} already in folder {targetFolder.Data.FullName}.");
         }
 
-        TryClearNodeChildren(oldParent.Data.Id);
-        TryClearNodeChildren(folderId);
+        if (targetFolder.Children.Select(x => x.Data.Name).Contains(node.Data.Name))
+        {
+            throw new InvalidOperationException(
+                $"Folder {targetFolder.Data.Name} already contains node named {node.Data.Name}.");
+        }
 
-        //TODO: database
+        var oldParentId = node.Parent.Data.Id;
+
+        var newParentId = await _repo.ChangeNodeParentAsync(nodeId, folderId);
+        if (newParentId == oldParentId)
+        {
+            // move fail or move back
+            return;
+        }
+
+        if (_nodes.TryGetValue(nodeId, out var n))
+        {
+            n.Data = node.Data with
+            {
+                ParentId = newParentId,
+            };
+            n.ClearParent();
+        }
+
+        TryClearNodeChildren(oldParentId);
+        TryClearNodeChildren(newParentId);
     }
 
     [PublicAPI]
     public async Task DeleteFolderAsync(Guid folderId)
     {
-        if (!IsStartUpComplete())
-        {
-            await WaitingForStartUpCompleteAsync();
-        }
+        await CheckAndWaitingWaitingForStartUpCompleteAsync();
 
         if (!TryGetFolderNode(folderId, out var folderNode))
         {
             return;
         }
 
-        if (folderNode.Data is not FolderNode folder)
+        if (folderNode.Data is not FolderNode)
         {
             throw new InvalidOperationException(
-                $"Node {folderId} is not a folder.");
+                $"Node {folderNode.Data.FullName} is not a folder.");
         }
 
         var nodesToBeDelete = folderNode.ToList();
@@ -190,8 +184,6 @@ internal class FileSystem : IFileSystem, IHostedService
 
         var parentNodeIds = nodesToBeDelete
             .Select(x => x.Data.ParentId)
-            .Where(x => x.HasValue)
-            .Select(x => x.Value)
             .Prepend(folderId)
             .Distinct();
         await _repo.DeleteFolderNodeAsync(folderId, parentNodeIds);
@@ -200,10 +192,7 @@ internal class FileSystem : IFileSystem, IHostedService
     [PublicAPI]
     public async Task DeleteFileAsync(Guid fileId)
     {
-        if (!IsStartUpComplete())
-        {
-            await WaitingForStartUpCompleteAsync();
-        }
+        await CheckAndWaitingWaitingForStartUpCompleteAsync();
 
         if (_nodes.TryRemove(fileId, out var fileNode))
         {
@@ -222,7 +211,7 @@ internal class FileSystem : IFileSystem, IHostedService
     private IEnumerable<LazyTreeNode<Node>> GetSelfAndAncestorsOfNode(LazyTreeNode<Node> treeNode)
     {
         yield return treeNode;
-        while (treeNode.Data.Id != Guid.Empty)
+        while (treeNode.Data.Id != treeNode.Data.ParentId)
         {
             treeNode = treeNode.Parent;
             yield return treeNode;
@@ -246,6 +235,14 @@ internal class FileSystem : IFileSystem, IHostedService
         return node;
     }
 
+    private void TryClearNodeParent(Guid nodeId)
+    {
+        if (_nodes.TryGetValue(nodeId, out var node))
+        {
+            node.ClearParent();
+        }
+    }
+
     private void TryClearNodeChildren(Guid nodeId)
     {
         if (_nodes.TryGetValue(nodeId, out var node))
@@ -254,20 +251,48 @@ internal class FileSystem : IFileSystem, IHostedService
         }
     }
 
-    private IEnumerable<LazyTreeNode<Node>> LazyTreeChildrenProvider(Node node)
+    #region TreeNodeProvider
+
+    private LazyTreeNode<Node> LazyTreeParentProvider(LazyTreeNode<Node> treeNode)
     {
-        return _nodes.Values.Where(x => x.Data.ParentId == node.Id);
+        if (treeNode.Data.IsRoot)
+        {
+            return treeNode;
+        }
+
+        return _nodes.TryGetValue(treeNode.Data.ParentId, out var result) ? result : null;
     }
 
-    private bool IsStartUpComplete() => _startUpCompleteToken.IsCancellationRequested;
-
-    private async Task WaitingForStartUpCompleteAsync()
+    private IEnumerable<LazyTreeNode<Node>> LazyTreeChildrenProvider(LazyTreeNode<Node> treeNode)
     {
-        if (IsStartUpComplete())
+        var id = treeNode.Data.Id;
+        return _nodes.Values.Where(x => x.Data.Id != id && x.Data.ParentId == id);
+    }
+
+    #endregion TreeNodeProvider
+
+    private void CheckAndWaitingForStartUpComplete()
+    {
+        if (_startUpCompleteToken.IsCancellationRequested)
         {
             return;
         }
 
+        WaitingForStartUpCompleteAsync().GetAwaiter().GetResult();
+    }
+
+    private async Task CheckAndWaitingWaitingForStartUpCompleteAsync()
+    {
+        if (_startUpCompleteToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        await WaitingForStartUpCompleteAsync();
+    }
+
+    private async Task WaitingForStartUpCompleteAsync()
+    {
         var tcs = new TaskCompletionSource();
         _startUpCompleteToken.Register(() => tcs.SetResult());
         await tcs.Task;
@@ -277,30 +302,30 @@ internal class FileSystem : IFileSystem, IHostedService
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        //var nodes = await _repo.GetAllNodesAsync();
-
-        _root = new LazyTreeNode<Node>(
-            new FolderNode
-            {
-                Id = Guid.Empty,
-                Name = "C:",
-                ParentId = Guid.Empty,
-            },
-            LazyTreeChildrenProvider);
-        _nodes.TryAdd(Guid.Empty, _root);
-
-        var n = new LazyTreeNode<Node>(new FileNode
+        try
         {
-            Id = Guid.NewGuid(),
-            ParentId = Guid.Empty,
-            Name = "Foo",
-            Extension = ".jpg",
-        }, LazyTreeChildrenProvider, _root);
-        _nodes.TryAdd(n.Data.Id, n);
+            var nodes = await _repo.GetAllNodesAsync();
+            foreach (var node in nodes)
+            {
+                _nodes.TryAdd(node.Id, new LazyTreeNode<Node>(
+                    node,
+                    LazyTreeParentProvider,
+                    LazyTreeChildrenProvider));
+            }
 
-        _root.ClearChildren();
-
-        _startUpCompleteSource.Cancel();
+            if (_options.Value.HouseKeepingInterval != TimeSpan.Zero)
+            {
+            }
+        }
+        catch (Exception)
+        {
+            // TODO: Error Handling
+            throw;
+        }
+        finally
+        {
+            _startUpCompleteSource.Cancel();
+        }
     }
 
     public Task StopAsync(CancellationToken cancellationToken)

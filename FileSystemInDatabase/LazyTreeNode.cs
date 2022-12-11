@@ -6,33 +6,40 @@ internal class LazyTreeNode<T> : IEnumerable<LazyTreeNode<T>>
 {
     public LazyTreeNode(
         T data,
-        Func<T, IEnumerable<LazyTreeNode<T>>> childrenNodeProvider)
+        Func<LazyTreeNode<T>, LazyTreeNode<T>> parentNodeProvider,
+        Func<LazyTreeNode<T>, IEnumerable<LazyTreeNode<T>>> childrenNodeProvider)
     {
         Data = data;
+        _parentNodeProvider = parentNodeProvider;
         _childrenNodeProvider = childrenNodeProvider;
     }
 
-    public LazyTreeNode(
-        T data,
-        Func<T, IEnumerable<LazyTreeNode<T>>> childrenNodeProvider,
-        LazyTreeNode<T> parent)
-        : this(data, childrenNodeProvider)
-    {
-        Parent = parent;
-    }
-
-    private readonly Func<T, IEnumerable<LazyTreeNode<T>>> _childrenNodeProvider;
+    private readonly Func<LazyTreeNode<T>, LazyTreeNode<T>> _parentNodeProvider;
+    private readonly Func<LazyTreeNode<T>, IEnumerable<LazyTreeNode<T>>> _childrenNodeProvider;
+    private LazyTreeNode<T> _parent = null;
     private ReadOnlyCollection<LazyTreeNode<T>> _children = null;
 
     // TODO: add reader writer lock for T that is not thread-safe to assign
     public T Data { get; set; }
 
-    public LazyTreeNode<T> Parent { get; }
+    public LazyTreeNode<T> Parent => PrepareParent();
 
     public IEnumerable<LazyTreeNode<T>> Children => PrepareChildren();
 
-    public bool IsRoot => Parent is null;
+    private LazyTreeNode<T> PrepareParent()
+    {
+        var parent = _parent;
+        if (parent is not null)
+        {
+            return parent;
+        }
 
+        parent = _parentNodeProvider.Invoke(this);
+        _parent = parent;
+        return parent;
+    }
+
+    // ReSharper disable once ReturnTypeCanBeEnumerable.Local
     private ReadOnlyCollection<LazyTreeNode<T>> PrepareChildren()
     {
         var children = _children; // defensive copy
@@ -42,11 +49,16 @@ internal class LazyTreeNode<T> : IEnumerable<LazyTreeNode<T>>
         }
 
         children = _childrenNodeProvider
-            .Invoke(Data)
+            .Invoke(this)
             .ToReadOnlyCollection();
         _children = children;
 
         return children;
+    }
+
+    public void ClearParent()
+    {
+        _parent = null;
     }
 
     public void ClearChildren()

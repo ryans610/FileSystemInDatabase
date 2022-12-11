@@ -7,4 +7,6 @@ public record FileNode : Node
     public string Extension { get; init; }
 
     public byte[] Content { get; init; }
+
+    public override string FullName => $"{Name}{Extension}";
 }
