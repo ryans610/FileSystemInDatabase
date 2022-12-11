@@ -1,0 +1,4 @@
+IF DB_ID('FileSystem') IS NULL
+BEGIN
+    CREATE DATABASE [FileSystem];
+END

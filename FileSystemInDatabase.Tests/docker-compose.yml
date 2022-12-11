@@ -1,0 +1,8 @@
+services:
+  db:
+    image: mcr.microsoft.com/mssql/server
+    ports:
+      - "1401:1433"
+    environment:
+      SA_PASSWORD: "!qaz2wsx"
+      ACCEPT_EULA: "Y"
