@@ -28,7 +28,7 @@ internal class LazyTreeNode<T> : IEnumerable<LazyTreeNode<T>>
 
     private LazyTreeNode<T> PrepareParent()
     {
-        var parent = _parent;
+        var parent = _parent; // defensive copy
         if (parent is not null)
         {
             return parent;
@@ -70,12 +70,9 @@ internal class LazyTreeNode<T> : IEnumerable<LazyTreeNode<T>>
     {
         var children = Children
             .SelectMany(x => x)
+            .Prepend(this)
             .ToReadOnlyCollection(); // defensive copy
-        yield return this;
-        foreach (var child in children)
-        {
-            yield return child;
-        }
+        return children.GetEnumerator();
     }
 
     IEnumerator IEnumerable.GetEnumerator()

@@ -13,6 +13,7 @@ public abstract class TestsBase
     protected const string DatabaseConnectionString =
         @"Server=localhost,1401;Database=FileSystem;User Id=sa;Password=!qaz2wsx;";
 
+    #region TestDataGuid
 
     // ReSharper disable InconsistentNaming
     protected static readonly Guid s_folder_C = Guid.Parse("2aa61413-0c8c-447a-99e6-b6981df0b315");
@@ -83,6 +84,8 @@ public abstract class TestsBase
     protected static readonly Guid s_file_bash_profile = Guid.Parse("cb720f82-55ef-480f-a779-408bec69e91c");
     // ReSharper restore InconsistentNaming
 
+    #endregion TestDataGuid
+
     protected IHost Host { get; private set; }
 
     [OneTimeSetUp]
@@ -112,7 +115,7 @@ public abstract class TestsBase
                 services.AddFileSystemInDatabase(options =>
                 {
                     options.DatabaseConnectionString = DatabaseConnectionString;
-                    options.HouseKeepingInterval = TimeSpan.Zero;   // ignore house keeping when unit test
+                    options.HouseKeepingInterval = TimeSpan.Zero; // ignore house keeping when unit test
                 });
             });
             Host = await builder.StartAsync();

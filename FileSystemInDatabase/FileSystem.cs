@@ -1,10 +1,3 @@
-using System.IO;
-using System.Threading;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Options;
-
-// ReSharper disable All
-
 namespace FileSystemInDatabase;
 
 internal class FileSystem : IFileSystem, IHostedService
@@ -24,9 +17,11 @@ internal class FileSystem : IFileSystem, IHostedService
     private readonly CancellationTokenSource _startUpCompleteSource;
     private readonly CancellationToken _startUpCompleteToken;
     private readonly CancellationTokenSource _shutDownCancellationSource = new();
+#pragma warning disable IDE0052 // 刪除未讀取的私用成員
     private Task _houseKeepingTask;
     private Task _trackingDatabaseChangeTask;
-    private TimeSpan _changeTrackingInterval;
+#pragma warning restore IDE0052 // 刪除未讀取的私用成員
+    private TimeSpan _changeTrackingInterval = TimeSpan.Zero;
     private long _trackingDatabaseChangeVersion = 0L;
 
     private readonly ConcurrentDictionary<Guid, LazyTreeNode<Node>> _nodes = new();
@@ -59,11 +54,10 @@ internal class FileSystem : IFileSystem, IHostedService
         }
 
         var path = GetSelfAndAncestorsOfNode(treeNode)
-            .Select(x => x.Data.Name)
+            .Select(x => x.Data.FullName)
             .Reverse()
             .JoinAsString('\\');
-        var extension = treeNode.Data is FileNode file ? file.Extension : string.Empty;
-        return $"{path}{extension}";
+        return path;
     }
 
     [PublicAPI]
@@ -403,7 +397,7 @@ internal class FileSystem : IFileSystem, IHostedService
             }
 
 
-            var _changeTrackingInterval = _options.Value.TrackingChangeInterval;
+            _changeTrackingInterval = _options.Value.TrackingChangeInterval;
             if (_changeTrackingInterval == TimeSpan.Zero)
             {
                 _changeTrackingInterval = TimeSpan.FromSeconds(10);
