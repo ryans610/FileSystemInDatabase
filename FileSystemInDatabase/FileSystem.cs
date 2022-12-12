@@ -98,7 +98,7 @@ internal class FileSystem : IFileSystem, IHostedService
     [PublicAPI]
     public async Task<Guid> AddSubFolderToFolderAsync(string subFolderName, Guid folderId)
     {
-        await CheckAndWaitingWaitingForStartUpCompleteAsync();
+        await CheckAndWaitingForStartUpCompleteAsync();
 
         var folder = GetFolderNodeOrThrow(folderId);
 
@@ -126,7 +126,7 @@ internal class FileSystem : IFileSystem, IHostedService
     [PublicAPI]
     public async Task<Guid> AddFileToFolderAsync(string fileName, byte[] content, Guid folderId)
     {
-        await CheckAndWaitingWaitingForStartUpCompleteAsync();
+        await CheckAndWaitingForStartUpCompleteAsync();
 
         var folder = GetFolderNodeOrThrow(folderId);
         var fileNameWithoutExtension = Path.GetFileNameWithoutExtension(fileName);
@@ -155,7 +155,7 @@ internal class FileSystem : IFileSystem, IHostedService
     [PublicAPI]
     public async Task MoveNodeToFolderAsync(Guid nodeId, Guid folderId)
     {
-        await CheckAndWaitingWaitingForStartUpCompleteAsync();
+        await CheckAndWaitingForStartUpCompleteAsync();
 
         var targetFolder = GetFolderNodeOrThrow(folderId);
         if (!_nodes.TryGetValue(nodeId, out var node))
@@ -201,7 +201,7 @@ internal class FileSystem : IFileSystem, IHostedService
     [PublicAPI]
     public async Task DeleteFolderAsync(Guid folderId)
     {
-        await CheckAndWaitingWaitingForStartUpCompleteAsync();
+        await CheckAndWaitingForStartUpCompleteAsync();
 
         if (!TryGetFolderNode(folderId, out var folderNode))
         {
@@ -229,7 +229,7 @@ internal class FileSystem : IFileSystem, IHostedService
     [PublicAPI]
     public async Task DeleteFileAsync(Guid fileId)
     {
-        await CheckAndWaitingWaitingForStartUpCompleteAsync();
+        await CheckAndWaitingForStartUpCompleteAsync();
 
         if (_nodes.TryRemove(fileId, out var fileNode))
         {
@@ -355,7 +355,7 @@ internal class FileSystem : IFileSystem, IHostedService
         WaitingForStartUpCompleteAsync().GetAwaiter().GetResult();
     }
 
-    private async Task CheckAndWaitingWaitingForStartUpCompleteAsync()
+    private async Task CheckAndWaitingForStartUpCompleteAsync()
     {
         if (_startUpCompleteToken.IsCancellationRequested)
         {
