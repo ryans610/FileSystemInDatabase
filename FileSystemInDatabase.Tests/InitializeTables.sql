@@ -12,7 +12,7 @@ USE [FileSystem];
 IF (NOT EXISTS (SELECT *
                 FROM INFORMATION_SCHEMA.TABLES
                 WHERE TABLE_SCHEMA = 'dbo'
-                AND  TABLE_NAME = 'Node'))
+                AND TABLE_NAME = 'Node'))
 BEGIN
     CREATE TABLE [Node] (
         [Id] uniqueidentifier  PRIMARY KEY,
@@ -21,6 +21,14 @@ BEGIN
         [Type] tinyint NOT NULL,
         [IsRoot] bit NOT NULL DEFAULT 0,
     );
+END
+
+IF (NOT EXISTS (SELECT *
+                FROM sys.indexes
+                WHERE object_id = object_id('dbo.Node')
+                AND [Name] = 'IX_Node_ParentId'))
+BEGIN
+    CREATE INDEX IX_Node_ParentId ON [dbo].[Node] ([ParentId]);
 END
 
 IF (NOT EXISTS (SELECT *
@@ -35,7 +43,7 @@ END
 IF (NOT EXISTS (SELECT *
                 FROM INFORMATION_SCHEMA.TABLES
                 WHERE TABLE_SCHEMA = 'dbo'
-                AND  TABLE_NAME = 'FolderNode'))
+                AND TABLE_NAME = 'FolderNode'))
 BEGIN
     CREATE TABLE [FolderNode](
         [Id] uniqueidentifier  PRIMARY KEY,
@@ -45,7 +53,7 @@ END
 IF (NOT EXISTS (SELECT *
                 FROM INFORMATION_SCHEMA.TABLES
                 WHERE TABLE_SCHEMA = 'dbo'
-                AND  TABLE_NAME = 'FileNode'))
+                AND TABLE_NAME = 'FileNode'))
 BEGIN
     CREATE TABLE [FileNode] (
         [Id] uniqueidentifier  PRIMARY KEY,
